@@ -11,9 +11,73 @@ weather_train_df = spark.read.format('csv').options(header='true', inferSchema='
 
 # COMMAND ----------
 
-test_df = spark.read.format('csv').options(header='true', inferSchema='true').load('/FileStore/tables/test.csv')
-building_metadata_df = spark.read.format('csv').options(header='true', inferSchema='true').load('/FileStore/tables/building_metadata.csv')
-weather_test_df = spark.read.format('csv').options(header='true', inferSchema='true').load('/FileStore/tables/weather_test.csv')
+# MAGIC %md
+# MAGIC #### 1.2 Data Processing
+
+# COMMAND ----------
+
+from pyspark.sql.functions import when, avg, col, round
+from pyspark.sql.window import Window
+
+# COMMAND ----------
+
+### weather train dataset processing ###
+
+w = Window().partitionBy('site_id')
+
+#Replace negative values of 'qty' with Null, as we don't want to consider them while averaging.
+#weather_train_df = weather_train_df.withColumn('qty',when(col('qty')<0,None).otherwise(col('qty')))
+weather_train_df = weather_train_df.withColumn('cloud_coverage',when(col('cloud_coverage').isNull(),avg(col('cloud_coverage')).over(w)).otherwise(col('cloud_coverage')))
+
+weather_train_df = weather_train_df.withColumn("cloud_coverage", round(weather_train_df["cloud_coverage"]).cast('integer'))
+
+weather_train_df = weather_train_df.withColumn('sea_level_pressure',when(col('sea_level_pressure').isNull(),avg(col('sea_level_pressure')).over(w)).otherwise(col('sea_level_pressure')))
+
+weather_train_df = weather_train_df.withColumn('precip_depth_1_hr',when(col('precip_depth_1_hr').isNull(),avg(col('precip_depth_1_hr')).over(w)).otherwise(col('precip_depth_1_hr')))
+weather_train_df = weather_train_df.withColumn("precip_depth_1_hr", round(weather_train_df["precip_depth_1_hr"]).cast('integer'))
+
+weather_train_df=weather_train_df.na.drop()
+
+# COMMAND ----------
+
+### building meta data processing ###
+
+w = Window().partitionBy('primary_use')
+building_metadata_df = building_metadata_df.withColumn('year_built',when(col('year_built').isNull(),avg(col('year_built')).over(w)).otherwise(col('year_built')))
+building_metadata_df = building_metadata_df.withColumn("year_built", round(building_metadata_df["year_built"]).cast('integer'))
+
+building_metadata_df = building_metadata_df.withColumn('floor_count',when(col('floor_count').isNull(),avg(col('floor_count')).over(w)).otherwise(col('floor_count')))
+building_metadata_df = building_metadata_df.withColumn("floor_count", round(building_metadata_df["floor_count"]).cast('integer'))
+
+building_metadata_df=building_metadata_df.na.drop()
+
+building_metadata_df = building_metadata_df.withColumn("primary_use", when(col("primary_use")=="Education", 1)
+                                   .when(col("primary_use")=="Office", 2)
+                                   .when(col("primary_use")=="Entertainment/public assembly", 3)
+                                   .when(col("primary_use")=="Public services", 4)
+                                   .when(col("primary_use")=="Lodging/residential", 5)
+                                   .when(col("primary_use")=="Other", 6)
+                                   .when(col("primary_use")=="Healthcare", 7)
+                                   .when(col("primary_use")=="Parking", 8)
+                                   .when(col("primary_use")=="Warehouse/storage", 9)
+                                   .when(col("primary_use")=="Manufacturing/industrial", 10)
+                                   .when(col("primary_use")=="Retail", 11)
+                                   .when(col("primary_use")=="Services", 12)
+                                   .when(col("primary_use")=="Technology/science", 13)
+                                   .when(col("primary_use")=="Food sales and service", 14)
+                                   .when(col("primary_use")=="Utility", 15)
+                                   .when(col("primary_use")=="Religious worship", 16))
+
+# COMMAND ----------
+
+### train dataset processing ###
+train_df = train_df.withColumn("meter_reading", when(col("meter")==0, col("meter_reading")*0.293))
+
+# COMMAND ----------
+
+# test_df = spark.read.format('csv').options(header='true', inferSchema='true').load('/FileStore/tables/test.csv')
+# building_metadata_df = spark.read.format('csv').options(header='true', inferSchema='true').load('/FileStore/tables/building_metadata.csv')
+# weather_test_df = spark.read.format('csv').options(header='true', inferSchema='true').load('/FileStore/tables/weather_test.csv')
 
 # COMMAND ----------
 
@@ -23,9 +87,9 @@ trainDF =  weather_train_df.join(meta_train_df, cond)
 
 # COMMAND ----------
 
-meta_test_df =  building_metadata_df.join(test_df, (building_metadata_df['building_id'] == test_df['building_id']))
-cond = [weather_test_df.site_id == meta_test_df.site_id, weather_test_df.timestamp == meta_test_df.timestamp]
-testDF =  weather_test_df.join(meta_test_df, cond)
+# meta_test_df =  building_metadata_df.join(test_df, (building_metadata_df['building_id'] == test_df['building_id']))
+# cond = [weather_test_df.site_id == meta_test_df.site_id, weather_test_df.timestamp == meta_test_df.timestamp]
+# testDF =  weather_test_df.join(meta_test_df, cond)
 
 # COMMAND ----------
 
@@ -34,8 +98,8 @@ datasetDF = datasetDF.na.fill(0)
 
 # COMMAND ----------
 
-datasetTestDF = testDF.drop("timestamp", "site_id", "building_id")
-datasetTestDF = datasetTestDF.na.fill(0)
+# datasetTestDF = testDF.drop("timestamp", "site_id", "building_id")
+# datasetTestDF = datasetTestDF.na.fill(0)
 
 # COMMAND ----------
 
@@ -44,7 +108,6 @@ split15DF, split85DF = datasetDF.randomSplit([15., 85.], seed=190)
 # Let's cache these datasets for performance
 testSetDF = split15DF.cache()
 trainingSetDF = split85DF.cache()
-submitSetDF = datasetTestDF.cache()
 
 # COMMAND ----------
 
@@ -54,7 +117,7 @@ submitSetDF = datasetTestDF.cache()
 # COMMAND ----------
 
 from pyspark.ml import Pipeline
-from pyspark.sql.functions import col, log, avg
+from pyspark.sql.functions import log
 from pyspark.ml.evaluation import Evaluator, RegressionEvaluator
 from math import sqrt
 from statistics import mean
@@ -66,7 +129,7 @@ from pyspark.ml.feature import VectorAssembler
 
 vectorizer = VectorAssembler()
 vectorizer.setInputCols(["air_temperature", "cloud_coverage", "dew_temperature", "precip_depth_1_hr", "sea_level_pressure", 
-                         "wind_direction", "wind_speed", "square_feet", "year_built", "floor_count", "meter"])
+                         "wind_direction", "wind_speed", "square_feet", "year_built", "floor_count", "meter", "primary_use"])
 vectorizer.setOutputCol("features")
 
 class RMSLEEvaluator(Evaluator):
@@ -280,7 +343,7 @@ crossval.setEstimator(dtPipeline)
 
 # Let's tune over our dt.maxDepth parameter on the values 2 and 3, create a paramter grid using the ParamGridBuilder
 paramGrid = (ParamGridBuilder()
-             .addGrid(dt.maxDepth, [2,3,4,5])
+             .addGrid(dt.maxDepth, [3,4,5])
              .build())
 
 # Add the grid to the CrossValidator
@@ -368,7 +431,7 @@ crossval.setEstimator(rfPipeline)
 
 # Let's tune over our dt.maxDepth parameter on the values 2 and 3, create a paramter grid using the ParamGridBuilder
 paramGrid = (ParamGridBuilder()
-             .addGrid(rf.maxDepth, [2,3,4,5])
+             .addGrid(rf.maxDepth, [3,4,5])
              .build())
 
 # Add the grid to the CrossValidator
@@ -411,7 +474,7 @@ gbt.setPredictionCol("predicted_meter_reading")\
   .setLabelCol("meter_reading")\
   .setFeaturesCol("features")\
   .setMaxBins(100)\
-  .setMaxIter(100)
+  .setMaxIter(20)
 
 # Create a Pipeline
 gbtPipeline = Pipeline()
@@ -452,19 +515,19 @@ print("Simple Root Mean Squared Logarithmtic Error: %.2f" % rmsle)
 
 # COMMAND ----------
 
-# # Let's just reuse our CrossValidator with the new dtPipeline, RegressionEvaluator regEval, and 3 fold cross validation
-# crossval.setEstimator(gbtPipeline)
+# Let's just reuse our CrossValidator with the new dtPipeline, RegressionEvaluator regEval, and 3 fold cross validation
+crossval.setEstimator(gbtPipeline)
 
-# # Let's tune over our dt.maxDepth parameter on the values 2 and 3, create a paramter grid using the ParamGridBuilder
-# paramGrid = (ParamGridBuilder()
-#              .addGrid(gbt.maxDepth, [2,3,4,5])
-#              .build())
+# Let's tune over our dt.maxDepth parameter on the values 2 and 3, create a paramter grid using the ParamGridBuilder
+paramGrid = (ParamGridBuilder()
+             .addGrid(gbt.maxDepth, [3,4,5])
+             .build())
 
-# # Add the grid to the CrossValidator
-# crossval.setEstimatorParamMaps(paramGrid)
+# Add the grid to the CrossValidator
+crossval.setEstimatorParamMaps(paramGrid)
 
-# # Now let's find and return the best model
-# gbtModel = crossval.fit(trainingSetDF).bestModel
+# Now let's find and return the best model
+gbtModel = crossval.fit(trainingSetDF).bestModel
 
 # COMMAND ----------
 
@@ -473,15 +536,15 @@ print("Simple Root Mean Squared Logarithmtic Error: %.2f" % rmsle)
 
 # COMMAND ----------
 
-# # evaluation
-# resultsDF = gbtModel.transform(testSetDF)
-# # Create an RMSE evaluator using the label and predicted columns
-# regEval = RMSLEEvaluator(predictionCol="predicted_meter_reading", labelCol="meter_reading")
+# evaluation
+resultsDF = gbtModel.transform(testSetDF)
+# Create an RMSE evaluator using the label and predicted columns
+regEval = RMSLEEvaluator(predictionCol="predicted_meter_reading", labelCol="meter_reading")
 
-# # Run the evaluator on the DataFrame
-# rmsle = regEval.evaluate(resultsDF)
+# Run the evaluator on the DataFrame
+rmsle = regEval.evaluate(resultsDF)
 
-# print("Cross Validated Root Mean Squared Logarithmtic Error: %.2f" % rmsle)
+print("Cross Validated Root Mean Squared Logarithmtic Error: %.2f" % rmsle)
 
 # COMMAND ----------
 
